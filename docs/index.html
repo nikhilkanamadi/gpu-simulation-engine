@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="GPU Algorithm Simulation Engine — TypeScript simulation of the GPU stack from backpropagation to tensor cores, with live metrics and tradeoff visualizations."
+    />
+    <title>GPU Algorithm Simulation Engine</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./assets/style.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-header-inner">
+        <a class="logo" href="#top">GPU Sim Engine</a>
+        <nav class="nav" aria-label="Page sections">
+          <a href="#overview">Overview</a>
+          <a href="#architecture">Architecture</a>
+          <a href="#quick-start">Quick start</a>
+          <a href="#concepts">Concepts</a>
+          <a href="#research">Research</a>
+          <a href="#github-pages">GitHub Pages</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="top">
+      <div class="hero">
+        <h1>GPU Algorithm Simulation Engine</h1>
+        <p class="lead">
+          A TypeScript simulation engine that models the GPU algorithm stack from model-level optimization
+          down to warp scheduling and memory — with a live dashboard, pipeline sidebar, and tradeoff
+          scatter plots.
+        </p>
+      </div>
+
+      <section id="overview">
+        <h2>Overview</h2>
+        <p>
+          The engine replays a unified <code>MetricSnapshot</code> stream tick-by-tick through a modular
+          pipeline: <strong>model</strong> → <strong>compute</strong> → <strong>memory</strong> →
+          <strong>warp scheduler</strong>. Each stage reads the snapshot updated by prior stages so metrics
+          reflect a logical chain.
+        </p>
+        <p>
+          Data can be <strong>synthetic</strong> or sourced from <strong>MLPerf</strong> (when a results
+          JSON is present); other sources fall back to synthetic traces tagged with the selected source.
+        </p>
+        <div class="panel">
+          <ul style="margin: 0; padding-left: 1.2rem; color: var(--muted)">
+            <li>Live dashboard: MFU, HBM util, SM occupancy, loss, bottleneck alerts</li>
+            <li>Pipeline trace per tick (execution order + metric links)</li>
+            <li>Nivo tradeoff graphs: roofline proxy, throughput vs latency, memory vs compute, occupancy vs stalls, speed vs quality</li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="architecture">
+        <h2>Architecture</h2>
+        <p>
+          Ingestion normalizes external traces into <code>MetricSnapshot[]</code>. The orchestrator runs
+          algorithm modules per tick; SQLite stores snapshots; Express exposes REST + WebSocket; the React
+          dashboard consumes live updates.
+        </p>
+        <pre class="arch-diagram" aria-label="Architecture diagram">┌─────────────────────────────────────────────────────────┐
+│               External data sources                     │
+│   MLPerf · Kineto · W&B · HTA · Lambda · synthetic      │
+└────────────────────────┬────────────────────────────────┘
+                         │ normalize
+┌────────────────────────▼────────────────────────────────┐
+│           Ingestion → MetricSnapshot[]                    │
+└────────────────────────┬────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────┐
+│  Orchestrator → modules → MetricCollector → Bottleneck  │
+└──────────┬──────────────────────────────┬───────────────┘
+           │ SQLite                         │ WebSocket
+           ▼                                ▼
+         Store                          Dashboard</pre>
+      </section>
+
+      <section id="quick-start">
+        <h2>Quick start</h2>
+        <p>Clone the repository, install dependencies, and run the dev servers (backend + frontend):</p>
+        <pre class="code-block"><code># Install
+npm install
+
+# Development (API + Vite dashboard)
+npm run dev</code></pre>
+        <p>
+          Open the app URL shown in the terminal (typically <code>http://localhost:5173</code>). Use
+          <strong>Start simulation</strong> to begin a run and stream metrics.
+        </p>
+        <h3>Production build</h3>
+        <pre class="code-block"><code>npm run build</code></pre>
+      </section>
+
+      <section id="concepts">
+        <h2>Key concepts</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Concept</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>MetricSnapshot</code></td>
+              <td>Normalized metric record per simulation tick</td>
+            </tr>
+            <tr>
+              <td><code>SimTick</code></td>
+              <td>Clock event passed to each algorithm module</td>
+            </tr>
+            <tr>
+              <td>MFU</td>
+              <td>Model FLOP utilization — primary efficiency signal</td>
+            </tr>
+            <tr>
+              <td>HBM bandwidth util</td>
+              <td>Memory subsystem pressure</td>
+            </tr>
+            <tr>
+              <td>SM occupancy</td>
+              <td>Scheduler saturation on streaming multiprocessors</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="research">
+        <h2>Research references</h2>
+        <p>
+          Algorithms in the stack are documented with peer-reviewed references in the repository
+          <code>ALGORITHMS.md</code>. Examples:
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Topic</th>
+              <th>Reference</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Backpropagation</td>
+              <td>Rumelhart et al., <em>Nature</em>, 1986</td>
+            </tr>
+            <tr>
+              <td>Attention</td>
+              <td>Vaswani et al., arXiv:1706.03762</td>
+            </tr>
+            <tr>
+              <td>FlashAttention</td>
+              <td>Dao et al., arXiv:2205.14135</td>
+            </tr>
+            <tr>
+              <td>Warp scheduling</td>
+              <td>Narasiman et al., <em>MICRO</em>, 2011</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="github-pages">
+        <h2>Deploy this site on GitHub Pages</h2>
+        <p>
+          This folder is a <strong>static single-page site</strong> (HTML + CSS). To publish it
+          directly from the repository:
+        </p>
+        <ol style="color: var(--muted); padding-left: 1.2rem; margin: 0 0 14px">
+          <li>Push the <code>docs/</code> folder to your GitHub branch (e.g. <code>main</code>).</li>
+          <li>
+            In the repo on GitHub: <strong>Settings → Pages</strong> → <strong>Build and deployment</strong>
+            → Source: <strong>Deploy from a branch</strong>.
+          </li>
+          <li>
+            Branch: <code>main</code> (or your default), folder: <code>/docs</code>, then Save.
+          </li>
+          <li>
+            After the workflow finishes, the site is available at
+            <code>https://&lt;username&gt;.github.io/&lt;repo&gt;/</code>
+          </li>
+        </ol>
+        <p>
+          The empty <code>.nojekyll</code> file disables Jekyll processing so paths and assets behave as
+          plain static files.
+        </p>
+        <p class="license">
+          <strong>License:</strong> MIT · See the repository root for full text.
+        </p>
+      </section>
+
+      <footer class="footer">
+        <p>
+          This page is generated for <strong>GitHub Pages</strong> from the <code>docs/</code> directory.
+          For the full developer documentation, see <code>README.md</code>, <code>ARCHITECTURE.md</code>,
+          and <code>ALGORITHMS.md</code> in the repository.
+        </p>
+      </footer>
+    </main>
+  </body>
+</html>

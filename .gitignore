@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+frontend/dist/
+backend/dist/
+packages/shared/dist/
+
+# Local data & secrets
+*.sqlite
+*.sqlite-journal
+.env
+.env.*
+
+# OS & editors
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+
+# Vite cache
+frontend/node_modules/.vite/

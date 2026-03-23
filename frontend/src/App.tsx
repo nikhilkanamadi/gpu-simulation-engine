@@ -7,6 +7,7 @@ import { buildDerivedArchitectureMetrics } from "./architectureMetrics";
 import { PipelineSidebar } from "./PipelineSidebar";
 import { TradeoffGraphs } from "./TradeoffGraphs";
 import type { TradeoffSample } from "./tradeoffTypes";
+import { LocalSimulationRunner } from "./LocalSimulationRunner";
 
 function formatPct(x: number | undefined) {
   if (x == null || Number.isNaN(x)) return "—";
@@ -33,6 +34,7 @@ export default function App() {
   const [source, setSource] = useState<DataSource>("synthetic");
   const [workflow, setWorkflow] = useState<SimulationWorkflow>("training");
   const [runId, setRunId] = useState<string | null>(null);
+  const [runMode, setRunMode] = useState<"remote" | "local" | null>(null);
   const [latest, setLatest] = useState<MetricSnapshot | null>(null);
   const [alerts, setAlerts] = useState<BottleneckAlert[]>([]);
   const [lossPoints, setLossPoints] = useState<Array<{ tick: number; loss: number }>>([]);
@@ -40,9 +42,42 @@ export default function App() {
   const [tradeoffSamples, setTradeoffSamples] = useState<TradeoffSample[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const localRunnerRef = useRef<LocalSimulationRunner | null>(null);
 
-  const canControl = useMemo(() => Boolean(runId), [runId]);
+  const canControl = useMemo(() => runMode != null, [runMode]);
   const architectureMetrics = useMemo(() => buildDerivedArchitectureMetrics(modelId), [modelId]);
+
+  function ingestSnapshot(s: MetricSnapshot) {
+    setLatest(s);
+    setTradeoffSamples((prev) => {
+      const row: TradeoffSample = {
+        tick: s.tick,
+        mfu: s.mfu,
+        hbmBandwidthUtil: s.hbmBandwidthUtil,
+        smOccupancy: s.smOccupancy,
+        warpStallRate: s.warpStallRate ?? 0,
+        tokensPerSec: s.tokensPerSec ?? 0,
+        tensorCoreUtil: s.tensorCoreUtil ?? s.mfu,
+        tflopsAchieved: s.tflopsAchieved,
+        loss: s.loss
+      };
+      return [...prev, row].slice(-500);
+    });
+
+    if (s.loss != null) {
+      setLossPoints((prev) => {
+        const next = [...prev, { tick: s.tick, loss: s.loss! }];
+        return next.slice(-250);
+      });
+    }
+  }
+
+  function ingestAlert(a: BottleneckAlert) {
+    setAlerts((prev) => {
+      const next = [...prev, a];
+      return next.slice(-20);
+    });
+  }
 
   async function startRun() {
     setLatest(null);
@@ -51,42 +86,78 @@ export default function App() {
     setTradeoffSamples([]);
     setStartError(null);
 
-    const res = await fetch("/api/runs/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        modelId,
-        gpuId,
-        source,
-        options: {
-          durationTicks: 800,
-          tickMs: 40,
-          flashAttention: true,
-          seed: seedFromSelections(42, modelId, gpuId, workflow),
-          workflow
-        }
-      })
-    });
+    // Try remote start first (works when backend is hosted alongside the dashboard).
+    try {
+      const res = await fetch("/api/runs/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          modelId,
+          gpuId,
+          source,
+          options: {
+            durationTicks: 800,
+            tickMs: 40,
+            flashAttention: true,
+            seed: seedFromSelections(42, modelId, gpuId, workflow),
+            workflow
+          }
+        })
+      });
 
-    const data = (await res.json()) as { runId?: string; error?: string };
-    if (!res.ok) {
-      setStartError(data.error ?? `Start failed (${res.status})`);
-      return;
+      const data = (await res.json().catch(() => ({}))) as { runId?: string; error?: string };
+      if (!res.ok || !data.runId) {
+        setStartError("Backend unreachable. Running local simulation instead.");
+        startLocalSimulation();
+        return;
+      }
+
+      setRunMode("remote");
+      setRunId(data.runId);
+    } catch {
+      setStartError("Backend unreachable. Running local simulation instead.");
+      startLocalSimulation();
     }
-    if (!data.runId) {
-      setStartError("Start failed: no run id returned.");
-      return;
-    }
-    setRunId(data.runId);
+  }
+
+  function startLocalSimulation() {
+    // Stop any previous local runner before starting a new one.
+    localRunnerRef.current?.stop();
+    wsRef.current?.close();
+
+    const localId = `local-${Date.now()}`;
+    setRunMode("local");
+    setRunId(localId);
+
+    const runner = new LocalSimulationRunner({
+      durationTicks: 800,
+      tickMs: 40,
+      seed: seedFromSelections(42, modelId, gpuId, workflow),
+      flashAttention: true,
+      workflow,
+      modelId,
+      gpuId,
+      source
+    });
+    localRunnerRef.current = runner;
+
+    runner.start({
+      onSnapshot: (s) => ingestSnapshot(s),
+      onAlert: (a) => ingestAlert(a),
+      onDone: () => {
+        setRunMode(null);
+        setRunId(null);
+      }
+    });
   }
 
   function postControl(endpoint: string) {
-    if (!runId) return Promise.resolve();
+    if (!runId || runMode !== "remote") return Promise.resolve();
     return fetch(endpoint, { method: "POST" }).catch(() => undefined);
   }
 
   useEffect(() => {
-    if (!runId) return;
+    if (!runId || runMode !== "remote") return;
 
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const wsUrl = `${proto}://${window.location.host}/ws/live?runId=${encodeURIComponent(runId)}`;
@@ -99,36 +170,8 @@ export default function App() {
           | { type: "snapshot"; runId: string; snapshot: MetricSnapshot }
           | { type: "alert"; runId: string; alert: BottleneckAlert };
 
-        if (msg.type === "snapshot") {
-          setLatest(msg.snapshot);
-          const s = msg.snapshot;
-          setTradeoffSamples((prev) => {
-            const row: TradeoffSample = {
-              tick: s.tick,
-              mfu: s.mfu,
-              hbmBandwidthUtil: s.hbmBandwidthUtil,
-              smOccupancy: s.smOccupancy,
-              warpStallRate: s.warpStallRate ?? 0,
-              tokensPerSec: s.tokensPerSec ?? 0,
-              tensorCoreUtil: s.tensorCoreUtil ?? s.mfu,
-              tflopsAchieved: s.tflopsAchieved,
-              loss: s.loss
-            };
-            return [...prev, row].slice(-500);
-          });
-          if (msg.snapshot.loss != null) {
-            setLossPoints((prev) => {
-              const next = [...prev, { tick: msg.snapshot.tick, loss: msg.snapshot.loss! }];
-              // Keep chart lightweight for MVP.
-              return next.slice(-250);
-            });
-          }
-        } else if (msg.type === "alert") {
-          setAlerts((prev) => {
-            const next = [...prev, msg.alert];
-            return next.slice(-20);
-          });
-        }
+        if (msg.type === "snapshot") ingestSnapshot(msg.snapshot);
+        else ingestAlert(msg.alert);
       } catch {
         // Ignore malformed messages in MVP.
       }
@@ -143,7 +186,7 @@ export default function App() {
       wsRef.current = null;
       ws.close();
     };
-  }, [runId]);
+  }, [runId, runMode]);
 
   return (
     <div className="app-layout">
@@ -204,13 +247,25 @@ export default function App() {
           <button className="btn btn-primary" onClick={startRun}>
             Start simulation
           </button>
-          <button className="btn" disabled={!canControl} onClick={() => postControl(`/api/runs/${runId}/pause`)}>
+          <button
+            className="btn"
+            disabled={!canControl || !runId}
+            onClick={() => (runMode === "local" ? localRunnerRef.current?.pause() : postControl(`/api/runs/${runId}/pause`))}
+          >
             Pause
           </button>
-          <button className="btn" disabled={!canControl} onClick={() => postControl(`/api/runs/${runId}/resume`)}>
+          <button
+            className="btn"
+            disabled={!canControl || !runId}
+            onClick={() => (runMode === "local" ? localRunnerRef.current?.resume() : postControl(`/api/runs/${runId}/resume`))}
+          >
             Resume
           </button>
-          <button className="btn" disabled={!canControl} onClick={() => postControl(`/api/runs/${runId}/step`)}>
+          <button
+            className="btn"
+            disabled={!canControl || !runId}
+            onClick={() => (runMode === "local" ? localRunnerRef.current?.stepOnce() : postControl(`/api/runs/${runId}/step`))}
+          >
             Step
           </button>
         </div>
